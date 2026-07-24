@@ -1,3 +1,4 @@
 *.fits
 *:Zone.Identifier
 data/
+test.ipynb

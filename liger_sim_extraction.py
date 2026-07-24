@@ -13,6 +13,7 @@ from time import time
 
 @njit(inline="always")
 def _bin_left(x, i):
+    ''' Given an array of bin centers x, return the left edge of the i-th bin. '''
     if i == 0:
         return x[0] - 0.5 * (x[1] - x[0])
     return 0.5 * (x[i - 1] + x[i])
@@ -20,6 +21,7 @@ def _bin_left(x, i):
 
 @njit(inline="always")
 def _bin_right(x, i, n):
+    ''' Given an array of bin centers x, return the right edge of the i-th bin. '''
     if i == n - 1:
         return x[n - 1] + 0.5 * (x[n - 1] - x[n - 2])
     return 0.5 * (x[i] + x[i + 1])
@@ -27,6 +29,7 @@ def _bin_right(x, i, n):
 
 @njit(inline="always")
 def _advance_to_overlap(x_in, j, xl, n_in):
+    ''' Advance the index j in x_in until x_in[j] is the last point before xl. '''
     while j < n_in - 1 and x_in[j + 1] <= xl:
         j += 1
     return j
@@ -34,6 +37,7 @@ def _advance_to_overlap(x_in, j, xl, n_in):
 
 @njit(inline="always")
 def _integrate_linear_segment(x0, x1, y0, y1, a, b):
+    ''' Integrate a linear segment defined by points (x0, y0) and (x1, y1) over the interval [a, b]. '''
     slope = (y1 - y0) / (x1 - x0)
 
     da = a - x0
@@ -47,6 +51,7 @@ def _integrate_linear_segment(x0, x1, y0, y1, a, b):
 
 @njit(cache=True)
 def resample_flux_conserving_1d(x_in, flux_in, x_out):
+    ''' Resample flux_in from x_in to x_out while conserving total flux. '''
     n_in = x_in.size
     n_out = x_out.size
 
@@ -91,6 +96,7 @@ def resample_flux_conserving_1d(x_in, flux_in, x_out):
 
 @njit(nogil=True, cache=True)
 def linear_fit_1d(x, y):
+    ''' Perform a linear fit to the data points (x, y) and return the slope and intercept. '''
     n = x.size
 
     sx = 0
@@ -589,3 +595,72 @@ def extract_spectra(rawframe_fn:str,recmat_fn:str,arr_mask:np.ndarray,numiter:in
         hdulist = fits.HDUList([primary_hdu, hdu1, hdu2,hdu3,hdu4])
         hdulist.writeto(output_fn, overwrite=True)
     return output_cube
+
+##############################################
+####### Making wavelength solutions   ########
+##############################################
+
+# 'Ground truth' from Zemax model
+def make_wave_sol_from_csv(
+    trace_dir : str,
+    arr_mask : np.ndarray,
+    filter_name:str='KN2',
+    resolution:str='4000',
+    degree:int =3
+)->np.ndarray:
+    #Extract data
+    data = np.loadtxt(trace_dir + filter_name + '_' + resolution + '.csv', delimiter=' ')
+    midpoint = 2048
+    x1 = data[:, 4]/0.015 + midpoint
+    x2 = data[:, 6]/0.015 + midpoint
+    x3 = data[:, 8]/0.015 + midpoint
+    x4 = data[:, 10]/0.015 + midpoint
+    x5 = data[:, 12]/0.015 + midpoint
+
+    y1 = data[:, 5]/0.015 + midpoint
+    y2 = data[:, 7]/0.015 + midpoint
+    y3 = data[:, 9]/0.015 + midpoint
+    y4 = data[:, 11]/0.015 + midpoint
+    y5 = data[:, 13]/0.015 + midpoint
+
+    nx1 = len(x1)
+
+    xarr = np.zeros((5))
+    yarr = np.zeros((5))
+    filter_data = load_filter_data(filter_name)
+    wavearr = np.linspace(filter_data['min_wave'],filter_data['max_wave'],5)*1000
+    midwave = wavearr[2]
+    wavearr = wavearr-midwave
+
+    wave_soln = np.zeros((135,135,degree+1))
+    ywave_soln = np.zeros((135,135,degree+1))
+    for i in range(nx1):
+        loc = np.where(arr_mask == i)
+
+        xarr[0] = x1[i]
+        xarr[1] = x2[i]
+        xarr[2] = x3[i]
+        xarr[3] = x4[i]
+        xarr[4] = x5[i]
+
+        yarr[0] = y1[i]
+        yarr[1] = y2[i]
+        yarr[2] = y3[i]
+        yarr[3] = y4[i]
+        yarr[4] = y5[i]
+
+
+        wave_soln[loc[0][0]+7-loc[1][0]//16,loc[1][0]+loc[0][0]//16] = np.flip(np.polyfit(wavearr,yarr,degree))
+        ywave_soln[loc[0][0]+7-loc[1][0]//16,loc[1][0]+loc[0][0]//16] = np.flip(np.polyfit(wavearr,xarr,degree))
+
+    for i in range(7):
+        for j in range(7):
+            ip = 22 + 16*i - j
+            jp = 16 + 16*j + i
+            wave_soln[ip,jp] = (wave_soln[ip-1,jp]+wave_soln[ip+1,jp]+wave_soln[ip,jp-1]+wave_soln[ip,jp+1])/4
+            ywave_soln[ip,jp] = (ywave_soln[ip-1,jp]+ywave_soln[ip+1,jp]+ywave_soln[ip,jp-1]+ywave_soln[ip,jp+1])/4
+    fits.writeto('data/wave_solns/'+filter_name + '_' + resolution +'_true_wave_soln.fits',wave_soln,overwrite=True)
+    fits.writeto('data/wave_solns/'+filter_name + '_' + resolution +'_true_wave_soln_y.fits',ywave_soln,overwrite=True)
+    return wave_soln
+    
+
